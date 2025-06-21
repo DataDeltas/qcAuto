@@ -2,10 +2,10 @@ name: Checker ID Processing
 
 on:
   schedule:
-    # Runs every 2 minutes from 1:40 AM to 5:59 AM (UTC+6), Sunday to Friday
-    # This translates to 19:40-23:59 UTC (previous day) and 00:01-23:59 UTC (current day)
-    - cron: '40-59/2 19-23 * * 6,0,1,2,3,4'  # 1:40-5:59 AM Bangladesh time (previous day in UTC)
-    - cron: '1-59/2 0-23 * * 0,1,2,3,4,5'   # 1:40-5:59 AM Bangladesh time (current day in UTC)
+    # Runs every 2 minutes from 1:50 AM to 5:59 AM (UTC+6), Sunday to Friday
+    # This translates to 19:50-23:59 UTC (previous day) and 00:50-05:59 UTC (current day)
+    - cron: '50-59/2 19-23 * * 6,0,1,2,3,4'  # 1:50-5:59 AM Bangladesh time (previous day in UTC)
+    - cron: '50-59/2 0-5 * * 0,1,2,3,4,5'   # 1:50-5:59 AM Bangladesh time (current day in UTC)
   workflow_dispatch: # Allow manual triggering
 
 env:
@@ -169,3 +169,117 @@ jobs:
           # Fallback if extraction failed
           if [ -z "$has_ids" ]; then
               has_ids="false"
+          fi
+          
+          echo "has_ids=$has_ids" >> $GITHUB_OUTPUT
+          echo "Final output: has_ids=$has_ids"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  process-checker-ids:
+    name: Process Checker IDs
+    needs: check-ids
+    if: needs.check-ids.outputs.has_ids == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3  # Hardcoded to match env.TIMEOUT_MINUTES
+    
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        attempt: [1, 2, 3] # Three attempts for better reliability
+        
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Download session cookies
+        uses: actions/download-artifact@v4
+        with:
+          name: session-cookies
+          path: .
+        continue-on-error: true
+        
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install httpx requests
+          
+      - name: Verify script exists
+        run: |
+          if [ ! -f "checker.py" ]; then
+            echo "ERROR: checker.py not found in repository"
+            exit 1
+          fi
+          echo "checker.py found, size: $(wc -c < checker.py) bytes"
+          
+      - name: Run checker script
+        id: run-checker
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=== Attempt ${{ matrix.attempt }} of 3 ==="
+          echo "Current time (UTC): $(date -u)"
+          echo "Current time (BD): $(TZ='Asia/Dhaka' date)"
+          echo "Python version: $(python --version)"
+          echo "Working directory: $(pwd)"
+          echo "Environment variables:"
+          echo "  GITHUB_TOKEN: ${GITHUB_TOKEN:0:10}..."
+          echo "  GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
+          echo "  GITHUB_RUN_ID: $GITHUB_RUN_ID"
+          echo ""
+          
+          # Run the checker script with timeout
+          timeout 150s python checker.py
+        continue-on-error: ${{ matrix.attempt < 3 }}
+        
+      - name: Upload session cookies
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-cookies
+          path: session_cookies.pkl
+          if-no-files-found: ignore
+          retention-days: 1
+          overwrite: true
+          
+      - name: Check script success
+        if: steps.run-checker.outcome == 'success'
+        run: |
+          echo "✅ Checker script completed successfully on attempt ${{ matrix.attempt }}"
+          exit 0
+          
+      - name: Handle script failure
+        if: failure() && matrix.attempt == 3
+        run: |
+          echo "❌ Checker script failed after 3 attempts"
+          echo "Check the logs above for detailed error information"
+          exit 1
+          
+      - name: Wait before retry
+        if: failure() && matrix.attempt < 3
+        run: |
+          echo "⏳ Attempt ${{ matrix.attempt }} failed, waiting 30 seconds before retry..."
+          sleep 30
+
+  cleanup:
+    name: Cleanup Old Artifacts
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [check-ids, process-checker-ids]
+    
+    steps:
+      - name: Clean up old artifacts
+        uses: geekyeggo/delete-artifact@v4
+        with:
+          name: |
+            session-cookies
+            check-ids-logs-*
+          failOnError: false
+        continue-on-error: true
