@@ -2,7 +2,7 @@ name: Checker ID Processing
 
 on:
   schedule:
-    - cron: '1-57/2 18-23 * * 0,1,2,3,4,6'
+    - cron: '20-57/2 0,18-23 * * 0,1,2,3,4,6'
   workflow_dispatch:
 
 jobs:
