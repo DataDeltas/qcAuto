@@ -2,131 +2,284 @@ name: Checker ID Processing
 
 on:
   schedule:
-    - cron: '30-57/2 0,18-23 * * 0,1,2,3,4,6'
-  workflow_dispatch:
+    # Runs every 2 minutes from 1:01 AM to 5:59 AM (UTC+6), Sunday to Friday
+    # This translates to 19:01-23:59 UTC (previous day) and 00:01-23:59 UTC (current day)
+    - cron: '1-59/2 19-23 * * 6,0,1,2,3,4'  # 1:01-5:59 AM Bangladesh time (previous day in UTC)
+    - cron: '1-59/2 0-23 * * 0,1,2,3,4,5'   # 1:01-5:59 AM Bangladesh time (current day in UTC)
+  workflow_dispatch: # Allow manual triggering
+
+env:
+  PYTHON_VERSION: '3.11'
+  TIMEOUT_MINUTES: 3
 
 jobs:
   check-ids:
+    name: Check Available IDs
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    timeout-minutes: 2
     outputs:
       has_ids: ${{ steps.check-ids.outputs.has_ids }}
+      
     steps:
-      - uses: actions/checkout@v4
-      - name: Restore cached file SHAs
-        id: cache-shas
-        uses: actions/cache@v3
-        with:
-          path: shas.json
-          key: file-shas-${{ github.run_id }}
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: ${{ env.PYTHON_VERSION }}
+          
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests
+          
       - name: Check for available checker IDs
         id: check-ids
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python -c "
-          import requests, base64, json, os, datetime
-          token = os.getenv('GITHUB_TOKEN')
-          headers = {'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github.v3+json'}
-          repo = 'lisan0007/lisanAtQA'
-          shas = json.load(open('shas.json')) if os.path.exists('shas.json') else {}
-          checker_ids, progress = set(), {'completed_checkers': []}
-          with open('check_ids.log', 'a') as log_file:
-              log_file.write(f'[{datetime.datetime.now()}] Starting ID check\n')
-              for file in ['ApprovedCheckerIDs.txt', 'approval_progress.json']:
-                headers_copy = headers.copy()
-                if file in shas:
-                  headers_copy['If-None-Match'] = shas[file]
-                response = requests.get(f'https://api.github.com/repos/{repo}/contents/{file}', headers=headers_copy)
-                log_file.write(f'[{datetime.datetime.now()}] Checking {file}, Status: {response.status_code}\n')
-                if response.status_code == 304:
-                  continue
-                if response.status_code == 403 and 'X-RateLimit-Remaining' in response.headers and int(response.headers['X-RateLimit-Remaining']) < 10:
-                  log_file.write(f'[{datetime.datetime.now()}] Rate limit nearly exhausted.\n')
-                  exit(1)
-                if response.status_code == 404:
-                  log_file.write(f'[{datetime.datetime.now()}] File {file} not found.\n')
-                  print(f'::set-output name=has_ids::false')
-                  exit(0)
-                response.raise_for_status()
-                content = response.json()
-                shas[file] = content['sha']
-                decoded = base64.b64decode(content['content']).decode('utf-8')
-                if file == 'ApprovedCheckerIDs.txt':
-                  checker_ids = {line.strip() for line in decoded.splitlines() if line.strip()}
-                else:
-                  progress = json.loads(decoded) if decoded else {'completed_checkers': []}
-              json.dump(shas, open('shas.json', 'w'))
-              has_ids = bool([id for id in checker_ids if id not in progress['completed_checkers']])
-              log_file.write(f'[{datetime.datetime.now()}] IDs available: {has_ids}\n')
-              print(f'::set-output name=has_ids::{has_ids}')
-          " 2>> check_ids.log
-      - name: Upload logs as artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: check-ids-logs
-          path: check_ids.log
-          retention-days: 7
-      - name: Save cached file SHAs
-        if: always()
-        uses: actions/cache@v3
-        with:
-          path: shas.json
-          key: file-shas-${{ github.run_id }}
-      - name: Log ID availability
-        run: echo "Checker IDs available: ${{ steps.check-ids.outputs.has_ids }}"
+          python << 'EOF'
+          import requests
+          import base64
+          import json
+          import os
+          import sys
+          from datetime import datetime, timezone, timedelta
+          
+          def log_message(msg):
+              timestamp = datetime.now(timezone(timedelta(hours=6))).strftime('%Y-%m-%d %H:%M:%S')
+              print(f"[{timestamp}] {msg}")
+              
+          try:
+              token = os.getenv('GITHUB_TOKEN')
+              if not token:
+                  log_message("ERROR: GITHUB_TOKEN not found")
+                  print("has_ids=false")
+                  sys.exit(1)
+                  
+              headers = {
+                  'Authorization': f'Bearer {token}',
+                  'Accept': 'application/vnd.github.v3+json'
+              }
+              
+              repo = 'lisan0007/lisanAtQA'
+              base_url = f'https://api.github.com/repos/{repo}/contents'
+              
+              log_message("Starting ID availability check")
+              
+              # Check both files
+              checker_ids = set()
+              progress = {'completed_checkers': []}
+              
+              for file_name, var_name in [('ApprovedCheckerIDs.txt', 'checker_ids'), ('approval_progress.json', 'progress')]:
+                  try:
+                      response = requests.get(f'{base_url}/{file_name}', headers=headers, timeout=30)
+                      
+                      if response.status_code == 403:
+                          rate_limit = int(response.headers.get('X-RateLimit-Remaining', 0))
+                          log_message(f"Rate limit remaining: {rate_limit}")
+                          if rate_limit < 10:
+                              log_message("Rate limit nearly exhausted")
+                              print("has_ids=false")
+                              sys.exit(1)
+                              
+                      if response.status_code == 404:
+                          log_message(f"File {file_name} not found")
+                          if file_name == 'ApprovedCheckerIDs.txt':
+                              print("has_ids=false")
+                              sys.exit(0)
+                          continue
+                          
+                      response.raise_for_status()
+                      content = response.json()
+                      decoded = base64.b64decode(content['content']).decode('utf-8')
+                      
+                      if file_name == 'ApprovedCheckerIDs.txt':
+                          checker_ids = {line.strip() for line in decoded.splitlines() if line.strip()}
+                          log_message(f"Found {len(checker_ids)} total checker IDs")
+                      else:
+                          try:
+                              progress = json.loads(decoded) if decoded.strip() else {'completed_checkers': []}
+                              log_message(f"Found {len(progress.get('completed_checkers', []))} completed checkers")
+                          except json.JSONDecodeError:
+                              log_message(f"Failed to parse {file_name}, using empty progress")
+                              progress = {'completed_checkers': []}
+                              
+                  except requests.exceptions.RequestException as e:
+                      log_message(f"Request error for {file_name}: {e}")
+                      print("has_ids=false")
+                      sys.exit(1)
+                      
+              # Check if there are available IDs
+              remaining_ids = [id for id in checker_ids if id not in progress.get('completed_checkers', [])]
+              has_ids = len(remaining_ids) > 0
+              
+              log_message(f"Remaining IDs to process: {len(remaining_ids)}")
+              log_message(f"IDs available: {has_ids}")
+              
+              print(f"has_ids={str(has_ids).lower()}")
+              
+          except Exception as e:
+              log_message(f"Unexpected error: {e}")
+              print("has_ids=false")
+              sys.exit(1)
+          EOF
+          
+      - name: Set workflow output
+        run: |
+          # Extract the has_ids value from the Python script output
+          has_ids=$(python << 'EOF' 2>/dev/null | grep "has_ids=" | tail -1 | cut -d= -f2
+          import requests
+          import base64
+          import json
+          import os
+          import sys
+          from datetime import datetime, timezone, timedelta
+          
+          try:
+              token = os.getenv('GITHUB_TOKEN')
+              headers = {'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github.v3+json'}
+              repo = 'lisan0007/lisanAtQA'
+              base_url = f'https://api.github.com/repos/{repo}/contents'
+              
+              checker_ids = set()
+              progress = {'completed_checkers': []}
+              
+              for file_name in ['ApprovedCheckerIDs.txt', 'approval_progress.json']:
+                  response = requests.get(f'{base_url}/{file_name}', headers=headers, timeout=30)
+                  if response.status_code == 200:
+                      content = response.json()
+                      decoded = base64.b64decode(content['content']).decode('utf-8')
+                      if file_name == 'ApprovedCheckerIDs.txt':
+                          checker_ids = {line.strip() for line in decoded.splitlines() if line.strip()}
+                      else:
+                          try:
+                              progress = json.loads(decoded) if decoded.strip() else {'completed_checkers': []}
+                          except:
+                              progress = {'completed_checkers': []}
+              
+              remaining = [id for id in checker_ids if id not in progress.get('completed_checkers', [])]
+              print(f"has_ids={str(len(remaining) > 0).lower()}")
+          except:
+              print("has_ids=false")
+          EOF
+          )
+          
+          # Fallback if extraction failed
+          if [ -z "$has_ids" ]; then
+              has_ids="false"
+          fi
+          
+          echo "has_ids=$has_ids" >> $GITHUB_OUTPUT
+          echo "Final output: has_ids=$has_ids"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   process-checker-ids:
+    name: Process Checker IDs
     needs: check-ids
     if: needs.check-ids.outputs.has_ids == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: ${{ fromJson(env.TIMEOUT_MINUTES) }}
+    
     strategy:
       max-parallel: 1
       fail-fast: false
       matrix:
-        attempt: [1, 2]
+        attempt: [1, 2, 3] # Three attempts for better reliability
+        
     steps:
-      - uses: actions/checkout@v4
-      - name: Download cookie artifact
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Download session cookies
         uses: actions/download-artifact@v4
         with:
           name: session-cookies
           path: .
         continue-on-error: true
+        
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
+          
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install httpx requests
+          
+      - name: Verify script exists
+        run: |
+          if [ ! -f "checker.py" ]; then
+            echo "ERROR: checker.py not found in repository"
+            exit 1
+          fi
+          echo "checker.py found, size: $(wc -c < checker.py) bytes"
+          
       - name: Run checker script
+        id: run-checker
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Attempt ${{ matrix.attempt }} of 2"
-          python checker.py
-      - name: Upload cookie artifact
+          echo "=== Attempt ${{ matrix.attempt }} of 3 ==="
+          echo "Current time (UTC): $(date -u)"
+          echo "Current time (BD): $(TZ='Asia/Dhaka' date)"
+          echo "Python version: $(python --version)"
+          echo "Working directory: $(pwd)"
+          echo "Environment variables:"
+          echo "  GITHUB_TOKEN: ${GITHUB_TOKEN:0:10}..."
+          echo "  GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
+          echo "  GITHUB_RUN_ID: $GITHUB_RUN_ID"
+          echo ""
+          
+          # Run the checker script with timeout
+          timeout 150s python checker.py
+        continue-on-error: ${{ matrix.attempt < 3 }}
+        
+      - name: Upload session cookies
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: session-cookies
           path: session_cookies.pkl
           if-no-files-found: ignore
           retention-days: 1
-      - name: Log failure if both attempts fail
-        if: failure()
+          overwrite: true
+          
+      - name: Check script success
+        if: steps.run-checker.outcome == 'success'
         run: |
-          echo "Checker script failed after ${{ matrix.attempt }} attempts. Check logs for details."
+          echo "✅ Checker script completed successfully on attempt ${{ matrix.attempt }}"
+          exit 0
+          
+      - name: Handle script failure
+        if: failure() && matrix.attempt == 3
+        run: |
+          echo "❌ Checker script failed after 3 attempts"
+          echo "Check the logs above for detailed error information"
           exit 1
+          
+      - name: Wait before retry
+        if: failure() && matrix.attempt < 3
+        run: |
+          echo "⏳ Attempt ${{ matrix.attempt }} failed, waiting 30 seconds before retry..."
+          sleep 30
+
+  cleanup:
+    name: Cleanup Old Artifacts
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [check-ids, process-checker-ids]
+    
+    steps:
+      - name: Clean up old artifacts
+        uses: geekyeggo/delete-artifact@v4
+        with:
+          name: |
+            session-cookies
+            check-ids-logs-*
+          failOnError: false
+        continue-on-error: true
