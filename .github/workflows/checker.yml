@@ -33,37 +33,49 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python -c "
-          import requests, base64, json, os
+          import requests, base64, json, os, datetime
           token = os.getenv('GITHUB_TOKEN')
           headers = {'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github.v3+json'}
           repo = 'lisan0007/lisanAtQA'
           shas = json.load(open('shas.json')) if os.path.exists('shas.json') else {}
           checker_ids, progress = set(), {'completed_checkers': []}
-          for file in ['ApprovedCheckerIDs.txt', 'approval_progress.json']:
-            headers_copy = headers.copy()
-            if file in shas:
-              headers_copy['If-None-Match'] = shas[file]
-            response = requests.get(f'https://api.github.com/repos/{repo}/contents/{file}', headers=headers_copy)
-            if response.status_code == 304:
-              continue
-            if response.status_code == 403 and 'X-RateLimit-Remaining' in response.headers and int(response.headers['X-RateLimit-Remaining']) < 10:
-              print('Rate limit nearly exhausted.')
-              exit(1)
-            if response.status_code == 404:
-              print(f'::set-output name=has_ids::false')
-              exit(0)
-            response.raise_for_status()
-            content = response.json()
-            shas[file] = content['sha']
-            decoded = base64.b64decode(content['content']).decode('utf-8')
-            if file == 'ApprovedCheckerIDs.txt':
-              checker_ids = {line.strip() for line in decoded.splitlines() if line.strip()}
-            else:
-              progress = json.loads(decoded) if decoded else {'completed_checkers': []}
-          json.dump(shas, open('shas.json', 'w'))
-          has_ids = bool([id for id in checker_ids if id not in progress['completed_checkers']])
-          print(f'::set-output name=has_ids::{has_ids}')
-          "
+          with open('check_ids.log', 'a') as log_file:
+              log_file.write(f'[{datetime.datetime.now()}] Starting ID check\n')
+              for file in ['ApprovedCheckerIDs.txt', 'approval_progress.json']:
+                headers_copy = headers.copy()
+                if file in shas:
+                  headers_copy['If-None-Match'] = shas[file]
+                response = requests.get(f'https://api.github.com/repos/{repo}/contents/{file}', headers=headers_copy)
+                log_file.write(f'[{datetime.datetime.now()}] Checking {file}, Status: {response.status_code}\n')
+                if response.status_code == 304:
+                  continue
+                if response.status_code == 403 and 'X-RateLimit-Remaining' in response.headers and int(response.headers['X-RateLimit-Remaining']) < 10:
+                  log_file.write(f'[{datetime.datetime.now()}] Rate limit nearly exhausted.\n')
+                  exit(1)
+                if response.status_code == 404:
+                  log_file.write(f'[{datetime.datetime.now()}] File {file} not found.\n')
+                  print(f'::set-output name=has_ids::false')
+                  exit(0)
+                response.raise_for_status()
+                content = response.json()
+                shas[file] = content['sha']
+                decoded = base64.b64decode(content['content']).decode('utf-8')
+                if file == 'ApprovedCheckerIDs.txt':
+                  checker_ids = {line.strip() for line in decoded.splitlines() if line.strip()}
+                else:
+                  progress = json.loads(decoded) if decoded else {'completed_checkers': []}
+              json.dump(shas, open('shas.json', 'w'))
+              has_ids = bool([id for id in checker_ids if id not in progress['completed_checkers']])
+              log_file.write(f'[{datetime.datetime.now()}] IDs available: {has_ids}\n')
+              print(f'::set-output name=has_ids::{has_ids}')
+          " 2>> check_ids.log
+      - name: Upload logs as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-ids-logs
+          path: check_ids.log
+          retention-days: 7
       - name: Save cached file SHAs
         if: always()
         uses: actions/cache@v3
