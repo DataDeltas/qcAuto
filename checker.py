@@ -83,7 +83,6 @@ class GitHubHandler:
 
     def get_next_checker_id(self):
         try:
-            # Read checker IDs
             content = self.read_file(CHECKER_IDS_FILE)
             if not content:
                 logger.error("No checker IDs file found or file is empty")
@@ -94,7 +93,6 @@ class GitHubHandler:
                 logger.error("No checker IDs found in file")
                 return None, None
             
-            # Read progress
             progress_content = self.read_file(PROGRESS_FILE)
             if progress_content:
                 try:
@@ -107,7 +105,6 @@ class GitHubHandler:
             
             completed_ids = set(progress.get("completed_checkers", []))
             
-            # Find first uncompleted ID
             for checker_id in checker_ids:
                 if checker_id not in completed_ids:
                     logger.info(f"Found next checker ID to process: {checker_id}")
@@ -141,28 +138,38 @@ class GitHubHandler:
             return False
 
 def login():
+    """Logs into the website and returns an httpx Client with session cookies."""
     try:
-        logger.info("Attempting login...")
+        headers = {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.6",
+            "Origin": "https://roobtech.com",
+            "Referer": "https://roobtech.com/Account/Login"
+        }
+
         client = httpx.Client(follow_redirects=True, timeout=30.0)
-        
-        # Get login page first
-        login_page = client.get(LOGIN_URL)
-        logger.info(f"Login page status: {login_page.status_code}")
-        
-        # Attempt login
-        response = client.post(LOGIN_URL, data=LOGIN_DATA)
+        client.get(LOGIN_URL, headers=headers)  # Initial GET to establish session
+        response = client.post(
+            LOGIN_URL,
+            data=LOGIN_DATA,
+            headers=headers
+        )
+
         logger.info(f"Login response status: {response.status_code}")
-        
-        if response.status_code == 200 and "Login" not in str(response.url):
+        logger.info(f"Redirected to: {response.url}")
+
+        if response.status_code == 200 and "Login" not in response.url.path:
             logger.info("Login successful")
             return client
         else:
             logger.error(f"Login failed - redirected to: {response.url}")
             client.close()
             return None
-            
-    except Exception as e:
-        logger.error(f"Login error: {e}")
+
+    except httpx.HTTPError as e:
+        logger.error(f"Error during login: {e}")
         return None
 
 def approve_annotation(client, checker_id):
@@ -170,7 +177,10 @@ def approve_annotation(client, checker_id):
         headers = {
             "accept": "*/*",
             "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
-            "x-requested-with": "XMLHttpRequest"
+            "x-requested-with": "XMLHttpRequest",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+            "Origin": "https://roobtech.com",
+            "Referer": "https://roobtech.com/"
         }
         
         data = {"checkerId": checker_id, "type": "post"}
@@ -179,7 +189,7 @@ def approve_annotation(client, checker_id):
         logger.info(f"Approval response status: {response.status_code}")
         
         if "Login" in str(response.url):
-            logger.error("Session expired")
+            logger.error("Session expired or invalid")
             return False
             
         response.raise_for_status()
@@ -194,10 +204,8 @@ def main():
     try:
         logger.info(f"Starting approval script at {datetime.now(BANGLADESH_TZ).strftime('%Y-%m-%d %H:%M:%S')}")
         
-        # Initialize GitHub handler
         github = GitHubHandler()
         
-        # Get next checker ID
         checker_id, progress = github.get_next_checker_id()
         if not checker_id:
             logger.info("No more checker IDs to process")
@@ -205,16 +213,13 @@ def main():
             
         logger.info(f"Processing checker ID: {checker_id}")
         
-        # Login
         client = login()
         if not client:
             logger.error("Failed to login. Exiting.")
             return
         
         try:
-            # Approve annotation
             if approve_annotation(client, checker_id):
-                # Save progress
                 if github.save_progress(checker_id, progress):
                     logger.info(f"Successfully processed and saved progress for checker ID: {checker_id}")
                 else:
