@@ -1,12 +1,9 @@
-# .github/workflows/checker-script.yml
-
 name: Run Checker Script
 
 on:
   schedule:
-    # Run every 2 minutes
     - cron: '*/2 * * * *'
-  workflow_dispatch:  # Allow manual triggers
+  workflow_dispatch:
 
 jobs:
   run-script:
@@ -29,8 +26,8 @@ jobs:
           
           # Convert to minutes since midnight
           current_mins=$((current_hour * 60 + current_minute))
-          start_mins=$((7 * 60 + 38))   # 7:38 AM
-          end_mins=$((11 * 60 + 30))    # 11:30 AM
+          start_mins=$((8 * 60 + 15))   # 8:15 AM
+          end_mins=$((12 * 60 + 15))    # 12:15 PM (4 hours later)
           
           echo "Current time in Bangladesh: $current_time"
           echo "Current minutes: $current_mins"
@@ -38,7 +35,7 @@ jobs:
           echo "End minutes: $end_mins"
           
           if [ $current_mins -ge $start_mins ] && [ $current_mins -le $end_mins ]; then
-            echo "Time check passed - within operating hours (7:38 AM - 11:30 AM)"
+            echo "Time check passed - within operating hours (8:15 AM - 12:15 PM)"
             echo "should_run=true" >> $GITHUB_OUTPUT
           else
             echo "Outside operating hours (${current_time})"
@@ -46,11 +43,8 @@ jobs:
           fi
 
       - name: Checkout repository
-        uses: actions/checkout@v3
         if: steps.time-check.outputs.should_run == 'true'
-        with:
-          repository: lisan0007/lisanAtQA
-          token: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/checkout@v3
 
       - name: Set up Python
         if: steps.time-check.outputs.should_run == 'true'
@@ -64,14 +58,36 @@ jobs:
           python -m pip install --upgrade pip
           pip install httpx requests
 
-      - name: Run script
+      - name: Run script multiple times
         if: steps.time-check.outputs.should_run == 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TZ: 'Asia/Dhaka'
-          LOGIN_EMAIL: ${{ secrets.LOGIN_EMAIL }}
-          LOGIN_PASSWORD: ${{ secrets.LOGIN_PASSWORD }}
-          GITHUB_REPOSITORY: "lisan0007/lisanAtQA"
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          LOGIN_EMAIL: ${{ secrets.EMAIL }}
+          LOGIN_PASSWORD: ${{ secrets.PASSWORD }}
         run: |
-          echo "Starting script execution at $(TZ='Asia/Dhaka' date '+%Y-%m-%d %H:%M:%S')"
-          python checker.py
+          echo "Starting multiple runs at $(TZ='Asia/Dhaka' date '+%Y-%m-%d %H:%M:%S')"
+          
+          # Function to run the script
+          run_script() {
+            echo "Running script at $(TZ='Asia/Dhaka' date '+%Y-%m-%d %H:%M:%S')"
+            python checker.py
+            echo "Completed run at $(TZ='Asia/Dhaka' date '+%Y-%m-%d %H:%M:%S')"
+          }
+          
+          # Initial run
+          run_script
+          
+          # Continue running every 100 seconds until the time limit
+          end_time=$(($(date +%s) + 14400))  # Current time + 4 hours in seconds
+          
+          while [ $(date +%s) -lt $end_time ]; do
+            echo "Waiting 100 seconds before next run..."
+            sleep 100
+            
+            # Check if we're still within the 4-hour window
+            if [ $(date +%s) -lt $end_time ]; then
+              run_script
+            fi
+          done
+          
+          echo "Completed all runs at $(TZ='Asia/Dhaka' date '+%Y-%m-%d %H:%M:%S')"
