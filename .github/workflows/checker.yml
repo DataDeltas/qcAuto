@@ -16,26 +16,41 @@ jobs:
       - name: Check Time
         id: time-check
         run: |
-          # Get current time in GMT+6
-          current_time=$(TZ='Asia/Dhaka' date '+%H:%M')
-          start_time="07:30"
-          end_time="11:30"
+          # Install tzdata
+          sudo apt-get install -y tzdata
           
-          # Convert times to minutes for comparison
-          current_mins=$(TZ='Asia/Dhaka' date '+%H*60+%M' | bc)
-          start_mins=$(echo "07*60+30" | bc)
-          end_mins=$(echo "11*60+30" | bc)
+          # Set timezone to Bangladesh
+          export TZ='Asia/Dhaka'
+          
+          # Get current time in Bangladesh
+          current_time=$(date '+%H:%M')
+          current_hour=$(date '+%H')
+          current_minute=$(date '+%M')
+          
+          # Convert to minutes since midnight
+          current_mins=$((current_hour * 60 + current_minute))
+          start_mins=$((7 * 60 + 38))   # 7:38 AM
+          end_mins=$((11 * 60 + 30))    # 11:30 AM
+          
+          echo "Current time in Bangladesh: $current_time"
+          echo "Current minutes: $current_mins"
+          echo "Start minutes: $start_mins"
+          echo "End minutes: $end_mins"
           
           if [ $current_mins -ge $start_mins ] && [ $current_mins -le $end_mins ]; then
-            echo "Time check passed"
+            echo "Time check passed - within operating hours (7:38 AM - 11:30 AM)"
             echo "should_run=true" >> $GITHUB_OUTPUT
           else
             echo "Outside operating hours (${current_time})"
             echo "should_run=false" >> $GITHUB_OUTPUT
           fi
 
-      - uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
         if: steps.time-check.outputs.should_run == 'true'
+        with:
+          repository: lisan0007/lisanAtQA
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         if: steps.time-check.outputs.should_run == 'true'
@@ -53,4 +68,10 @@ jobs:
         if: steps.time-check.outputs.should_run == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python your_script.py
+          TZ: 'Asia/Dhaka'
+          LOGIN_EMAIL: ${{ secrets.LOGIN_EMAIL }}
+          LOGIN_PASSWORD: ${{ secrets.LOGIN_PASSWORD }}
+          GITHUB_REPOSITORY: "lisan0007/lisanAtQA"
+        run: |
+          echo "Starting script execution at $(TZ='Asia/Dhaka' date '+%Y-%m-%d %H:%M:%S')"
+          python checker.py
