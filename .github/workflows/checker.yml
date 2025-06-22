@@ -1,16 +1,14 @@
 name: Run Checker Script
-
 on:
   schedule:
     - cron: '*/2 * * * *'
   workflow_dispatch:
-
 jobs:
   run-script:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Check Time
+      - name: Check Time and Set Duration
         id: time-check
         run: |
           # Install tzdata
@@ -33,13 +31,21 @@ jobs:
           echo "Current minutes: $current_mins"
           echo "Start minutes: $start_mins"
           echo "End minutes: $end_mins"
+          echo "Trigger event: ${{ github.event_name }}"
           
-          if [ $current_mins -ge $start_mins ] && [ $current_mins -le $end_mins ]; then
+          # Check if workflow was triggered manually
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Workflow triggered manually - will run for 5 hours regardless of time"
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "run_duration=18000" >> $GITHUB_OUTPUT  # 5 hours = 18000 seconds
+          elif [ $current_mins -ge $start_mins ] && [ $current_mins -le $end_mins ]; then
             echo "Time check passed - within operating hours (8:15 AM - 12:15 PM)"
             echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "run_duration=14400" >> $GITHUB_OUTPUT  # 4 hours = 14400 seconds
           else
-            echo "Outside operating hours (${current_time})"
+            echo "Outside operating hours (${current_time}) and not manually triggered"
             echo "should_run=false" >> $GITHUB_OUTPUT
+            echo "run_duration=0" >> $GITHUB_OUTPUT
           fi
 
       - name: Checkout repository
@@ -65,7 +71,11 @@ jobs:
           LOGIN_EMAIL: ${{ secrets.EMAIL }}
           LOGIN_PASSWORD: ${{ secrets.PASSWORD }}
         run: |
+          duration=${{ steps.time-check.outputs.run_duration }}
+          duration_hours=$((duration / 3600))
+          
           echo "Starting multiple runs at $(TZ='Asia/Dhaka' date '+%Y-%m-%d %H:%M:%S')"
+          echo "Will run for $duration_hours hours (trigger: ${{ github.event_name }})"
           
           # Function to run the script
           run_script() {
@@ -78,16 +88,20 @@ jobs:
           run_script
           
           # Continue running every 100 seconds until the time limit
-          end_time=$(($(date +%s) + 14400))  # Current time + 4 hours in seconds
+          end_time=$(($(date +%s) + duration))
+          run_count=1
           
           while [ $(date +%s) -lt $end_time ]; do
             echo "Waiting 100 seconds before next run..."
             sleep 100
             
-            # Check if we're still within the 4-hour window
+            # Check if we're still within the time window
             if [ $(date +%s) -lt $end_time ]; then
+              run_count=$((run_count + 1))
+              echo "Starting run #$run_count"
               run_script
             fi
           done
           
-          echo "Completed all runs at $(TZ='Asia/Dhaka' date '+%Y-%m-%d %H:%M:%S')"
+          echo "Completed all $run_count runs at $(TZ='Asia/Dhaka' date '+%Y-%m-%d %H:%M:%S')"
+          echo "Total duration: $duration_hours hours"
